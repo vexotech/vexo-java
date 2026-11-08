@@ -111,7 +111,7 @@ Returns a `Vexo.Builder`. Throws `IllegalArgumentException` when the API key is 
 | --- | --- | --- |
 | `host(String)` | `https://api.vexo.co` | API base URL. |
 | `flushAt(int)` | `100` | Send a batch when this many messages are queued (1 to 500). |
-| `flushInterval(Duration)` | 10 seconds | Send whatever is queued this often. |
+| `flushInterval(Duration)` | 10 seconds | Send whatever is queued this often. `Duration.ZERO` turns the timer off, so messages go out only on `flushAt`, `flush()`, and `close()`. |
 | `maxRetries(int)` | `3` | Retries for network errors, timeouts, `429`, and `5xx` responses. |
 | `maxQueueSize(int)` | `10000` | Messages kept in memory; new messages are dropped once it's full. |
 | `timeout(Duration)` | 10 seconds | The timeout of each request. |
@@ -119,7 +119,7 @@ Returns a `Vexo.Builder`. Throws `IllegalArgumentException` when the API key is 
 | `onError(Consumer<? super VexoException>)` | Log a warning to the `co.vexo.server` `java.util.logging` logger | Called with send failures and with the messages that were dropped. |
 | `shutdownHook(boolean)` | `true` | Register a JVM shutdown hook that calls `close()`. |
 
-`build()` starts the client's daemon thread. It throws `IllegalArgumentException` for a host that isn't a URI, or for a timeout, flush interval, or queue size that isn't positive.
+`build()` starts the client's daemon thread. It throws `IllegalArgumentException` for a host that isn't a URI, a timeout or queue size that isn't positive, or a negative flush interval.
 
 ### `capture`
 

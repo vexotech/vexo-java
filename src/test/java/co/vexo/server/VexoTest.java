@@ -253,6 +253,19 @@ class VexoTest {
     }
 
     @Test
+    void aZeroFlushIntervalTurnsTheTimerOff() throws Exception {
+        FakeApi api = api();
+        Vexo vexo = start(client(api).flushInterval(Duration.ZERO));
+
+        vexo.capture("u", "a");
+        Thread.sleep(200);
+        assertEquals(0, api.requests.size(), "a zero flushInterval sent without flushAt or flush()");
+        vexo.flush();
+
+        assertEquals(List.of("a"), api.requests.get(0).field("event"));
+    }
+
+    @Test
     void splitsBatchesSoEachRequestBodyStaysUnder5Mb() throws IOException {
         FakeApi api = api();
         Vexo vexo = start(client(api));

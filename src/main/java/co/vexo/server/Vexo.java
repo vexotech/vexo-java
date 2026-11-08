@@ -77,7 +77,10 @@ public final class Vexo implements AutoCloseable {
             return thread;
         });
         long interval = builder.flushInterval.toNanos();
-        worker.scheduleWithFixedDelay(this::flushInBackground, interval, interval, TimeUnit.NANOSECONDS);
+        // A zero interval turns the timer off: only flushAt, flush(), and close() send.
+        if (interval > 0) {
+            worker.scheduleWithFixedDelay(this::flushInBackground, interval, interval, TimeUnit.NANOSECONDS);
+        }
         shutdownHook = builder.shutdownHook ? new Thread(this::close, "vexo-shutdown") : null;
         if (shutdownHook != null) {
             Runtime.getRuntime().addShutdownHook(shutdownHook);
@@ -369,7 +372,10 @@ public final class Vexo implements AutoCloseable {
             return this;
         }
 
-        /** Sends whatever is queued this often. Default: 10 seconds. */
+        /**
+         * Sends whatever is queued this often. {@link Duration#ZERO} turns the timer off, so only {@code flushAt},
+         * {@link Vexo#flush()}, and {@link Vexo#close()} send. Default: 10 seconds.
+         */
         public Builder flushInterval(Duration flushInterval) {
             this.flushInterval = Objects.requireNonNull(flushInterval, "flushInterval");
             return this;
@@ -421,12 +427,12 @@ public final class Vexo implements AutoCloseable {
         /**
          * Creates the client and starts its background thread.
          *
-         * @throws IllegalArgumentException when an option is out of range: a host that isn't a URI, or a timeout,
-         *                                  flush interval or queue size that isn't positive
+         * @throws IllegalArgumentException when an option is out of range: a host that isn't a URI, a timeout or
+         *                                  queue size that isn't positive, or a negative flush interval
          */
         public Vexo build() {
-            if (maxQueueSize <= 0 || flushInterval.isNegative() || flushInterval.isZero()) {
-                throw new IllegalArgumentException("vexo: maxQueueSize and flushInterval must be positive");
+            if (maxQueueSize <= 0 || flushInterval.isNegative()) {
+                throw new IllegalArgumentException("vexo: maxQueueSize must be positive and flushInterval not negative");
             }
             return new Vexo(this);
         }
