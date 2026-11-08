@@ -78,8 +78,14 @@ public final class ConformanceDriver {
         Map<String, Object> properties = map(step.get("properties"));
         if (Boolean.TRUE.equals(step.get("poison"))) {
             properties = properties == null ? new LinkedHashMap<>() : properties;
-            // The SDK's JSON writer refuses NaN.
-            properties.put("poison", Double.NaN);
+            // The SDK's JSON writer refuses a map that contains itself.
+            Map<String, Object> circular = new LinkedHashMap<>();
+            circular.put("self", circular);
+            properties.put("poison", circular);
+        }
+        if (Boolean.TRUE.equals(step.get("nan"))) {
+            properties = properties == null ? new LinkedHashMap<>() : properties;
+            properties.put("nan", Double.NaN);
         }
         return properties;
     }
