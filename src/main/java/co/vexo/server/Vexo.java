@@ -44,6 +44,8 @@ public final class Vexo implements AutoCloseable {
     static final int BATCH_ENVELOPE_BYTES = "{\"batch\":[]}".length();
     static final String USER_AGENT = "vexo-java/" + version();
     private static final String DEFAULT_HOST = "https://api.vexo.co";
+    // How long close() waits past the deadline for the interrupted background thread to report its batch.
+    private static final long ABORT_GRACE_MILLIS = 500;
     private static final Logger LOG = Logger.getLogger("co.vexo.server");
 
     private final int flushAt;
@@ -162,7 +164,13 @@ public final class Vexo implements AutoCloseable {
      * {@link #close()}, a batch that the API keeps failing takes its full retries.
      */
     public void flush() {
-        sendLock.lock();
+        try {
+            // Interruptible, so close() can stop a background flush that waits here at the deadline.
+            sendLock.lockInterruptibly();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
+        }
         try {
             drain();
         } finally {
@@ -171,9 +179,10 @@ public final class Vexo implements AutoCloseable {
     }
 
     /**
-     * Stops the background thread and sends everything queued, for up to {@code shutdownTimeout}. What is still
-     * queued at the deadline is dropped and reported to the error callback. Later messages are dropped and reported.
-     * Calling it again does nothing. The shutdown hook calls it when the JVM exits.
+     * Stops the background thread and sends everything queued, for up to {@code shutdownTimeout}. At the deadline it
+     * interrupts a request or retry wait still in progress and starts no new attempt; the messages it didn't send,
+     * and what is still queued, are reported to the error callback before it returns. Later messages are dropped and
+     * reported. Calling it again does nothing. The shutdown hook calls it when the JVM exits.
      */
     @Override
     public void close() {
@@ -205,8 +214,14 @@ public final class Vexo implements AutoCloseable {
             if (locked) {
                 sendLock.unlock();
             }
-            // Interrupts a request still running past the deadline; its batch is reported.
+            // At the deadline, interrupts the background thread's request or retry wait, and gives it a moment to
+            // report the batch it held, so that report comes before close() returns.
             worker.shutdownNow();
+            try {
+                worker.awaitTermination(ABORT_GRACE_MILLIS, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
             dropQueue();
         }
     }

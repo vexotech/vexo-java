@@ -504,7 +504,54 @@ class VexoTest {
         vexo.close();
 
         assertTrue(elapsedMillis(started) < 2500, "close() took " + elapsedMillis(started) + " ms");
-        assertTrue(errors.stream().anyMatch(e -> e.getMessage().contains("deadline")), errors.toString());
+        assertEquals(5, errors.stream().mapToInt(e -> e.getBatch().size()).sum(), "every message reported: " + errors);
+    }
+
+    @Test
+    void closeAbortsTheBackgroundRequestInFlightAndReportsItsBatchBeforeReturning() throws IOException {
+        FakeApi api = api(new Reply(HANG, null, null));
+        Vexo vexo = start(client(api).flushAt(1).timeout(Duration.ofSeconds(30)).shutdownTimeout(Duration.ofMillis(500))
+                .onError(this::recordSlowly));
+        vexo.capture("u", "in_flight");
+        waitFor(() -> api.requests.size() == 1);
+
+        long started = System.nanoTime();
+        vexo.close();
+
+        assertTrue(elapsedMillis(started) < 1500, "close() took " + elapsedMillis(started) + " ms");
+        assertEquals(List.of("in_flight"), reportedEvents());
+    }
+
+    @Test
+    void closeEndsTheBackgroundRetryWaitStartsNoRetryAndReportsTheBatchBeforeReturning() throws Exception {
+        FakeApi api = api(reply(429, "30"));
+        Vexo vexo = start(client(api).flushAt(1).shutdownTimeout(Duration.ofMillis(500)).onError(this::recordSlowly));
+        vexo.capture("u", "waiting");
+        waitFor(() -> api.requests.size() == 1);
+        Thread.sleep(100);
+
+        long started = System.nanoTime();
+        vexo.close();
+
+        assertTrue(elapsedMillis(started) < 1500, "close() took " + elapsedMillis(started) + " ms");
+        assertEquals(List.of("waiting"), reportedEvents());
+        Thread.sleep(200);
+        assertEquals(1, api.requests.size(), "a retry started after the deadline");
+    }
+
+    @Test
+    void closeGivesUpAtOnceOnARetryThatWouldComeAfterTheDeadline() throws IOException {
+        FakeApi api = api(reply(503, "5"));
+        Vexo vexo = start(client(api).shutdownTimeout(Duration.ofSeconds(2)));
+        vexo.capture("u", "a");
+
+        long started = System.nanoTime();
+        vexo.close();
+
+        assertTrue(elapsedMillis(started) < 1000, "close() waited " + elapsedMillis(started) + " ms for a retry it can't make");
+        assertEquals(1, api.requests.size());
+        assertEquals(503, errors.get(0).getStatus());
+        assertEquals(1, errors.get(0).getBatch().size());
     }
 
     @Test
@@ -617,6 +664,21 @@ class VexoTest {
         vexo.capture("u", "sent_later");
 
         waitFor(() -> api.requests.size() == 2);
+    }
+
+    // An error callback that takes a while, so a report that arrives after close() returns is missed.
+    private void recordSlowly(VexoException error) {
+        try {
+            Thread.sleep(100);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        errors.add(error);
+    }
+
+    private List<Object> reportedEvents() {
+        return errors.stream().flatMap(e -> e.getBatch().stream()).map(m -> m.get("event"))
+                .collect(java.util.stream.Collectors.toList());
     }
 
     private FakeApi api(Reply... replies) throws IOException {

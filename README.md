@@ -147,7 +147,7 @@ Sends everything queued, blocking until the queue is empty.
 
 ### `close()`
 
-Stops the background thread and sends everything queued, for up to `shutdownTimeout`. It interrupts a request that's still running at the deadline. Later `capture()` and `identify()` calls are dropped and reported. Calling `close()` again does nothing.
+Stops the background thread and sends everything queued, for up to `shutdownTimeout`. At the deadline, it interrupts a request or a retry wait that's still in progress and starts no new attempt; a retry that would come after the deadline is given up at once. Before `close()` returns, it reports the messages it didn't send, including the batch it interrupted. Later `capture()` and `identify()` calls are dropped and reported. Calling `close()` again does nothing.
 
 ## Errors and dropped messages
 

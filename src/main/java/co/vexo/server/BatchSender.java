@@ -52,67 +52,76 @@ final class BatchSender {
         this.remainingNanos = remainingNanos;
     }
 
-    /** Sends the batch; every failure goes to the error callback. Throws only when the thread is interrupted. */
+    /**
+     * Sends the batch; every failure goes to the error callback. Throws only when the thread is interrupted (close()
+     * does that at the shutdown deadline), after reporting the messages it didn't send.
+     */
     void send(List<Message> batch) throws InterruptedException {
+        // Narrowed to the messages the API reported as failed before each resend, so a report names only those.
+        List<Message> unsent = batch;
+        int retries = circuitOpen ? 0 : maxRetries;
         try {
-            deliver(batch);
-        } catch (VexoException e) {
-            onError.accept(e);
-        } catch (IOException | RuntimeException e) {
-            onError.accept(new VexoException("vexo: batch failed: " + e, e, 0, batch));
+            for (int attempt = 0; ; attempt++) {
+                HttpResponse<String> response;
+                try {
+                    response = post(unsent);
+                } catch (IOException e) {
+                    if (attempt >= retries || !waitToRetry(backoffNanos(attempt))) {
+                        circuitOpen = true;
+                        onError.accept(new VexoException("vexo: batch failed: " + e, e, 0, unsent));
+                        return;
+                    }
+                    continue;
+                }
+                int status = response.statusCode();
+                if (status >= 200 && status < 300) {
+                    circuitOpen = false;
+                    Map<?, ?> data = data(response.body());
+                    List<Map<?, ?>> dropped = results(data, "dropped", unsent.size());
+                    if (!dropped.isEmpty()) {
+                        onError.accept(resultsError(unsent, dropped, "the server dropped"));
+                    }
+                    List<Map<?, ?>> failed = results(data, "failed", unsent.size());
+                    if (failed.isEmpty()) {
+                        return;
+                    }
+                    VexoException stillFailed = resultsError(unsent, failed, "the server could not store");
+                    unsent = messagesAt(unsent, failed);
+                    if (attempt >= retries || !waitToRetry(backoffNanos(attempt))) {
+                        onError.accept(stillFailed);
+                        return;
+                    }
+                    continue;
+                }
+                boolean retryable = status == 429 || status >= 500;
+                long wait = retryAfterNanos(response.headers().firstValue("Retry-After").orElse(null))
+                        .orElse(backoffNanos(attempt));
+                if (!retryable || attempt >= retries || !waitToRetry(wait)) {
+                    if (retryable) {
+                        circuitOpen = true;
+                    }
+                    onError.accept(new VexoException("vexo: batch rejected with HTTP " + status + ": " + response.body(),
+                            null, status, unsent));
+                    return;
+                }
+            }
         } catch (InterruptedException e) {
-            onError.accept(new VexoException("vexo: interrupted while sending a batch", e, 0, batch));
+            onError.accept(new VexoException("vexo: interrupted while sending; " + unsent.size()
+                    + " message(s) may not be stored", e, 0, unsent));
             throw e;
+        } catch (RuntimeException e) {
+            onError.accept(new VexoException("vexo: batch failed: " + e, e, 0, unsent));
         }
     }
 
-    private void deliver(List<Message> batch) throws IOException, InterruptedException {
-        int retries = circuitOpen ? 0 : maxRetries;
-        for (int attempt = 0; ; attempt++) {
-            HttpResponse<String> response;
-            try {
-                response = post(batch);
-            } catch (IOException e) {
-                if (attempt >= retries || remainingNanos.getAsLong() <= 0) {
-                    circuitOpen = true;
-                    throw e;
-                }
-                sleep(backoffNanos(attempt));
-                continue;
-            }
-            boolean lastAttempt = attempt >= retries || remainingNanos.getAsLong() <= 0;
-            int status = response.statusCode();
-            if (status >= 200 && status < 300) {
-                circuitOpen = false;
-                Map<?, ?> data = data(response.body());
-                reportResults(batch, results(data, "dropped", batch.size()), "the server dropped");
-                List<Map<?, ?>> failed = results(data, "failed", batch.size());
-                if (failed.isEmpty()) {
-                    return;
-                }
-                if (lastAttempt) {
-                    reportResults(batch, failed, "the server could not store");
-                    return;
-                }
-                List<Message> retry = new ArrayList<>();
-                for (Map<?, ?> result : failed) {
-                    retry.add(batch.get(index(result)));
-                }
-                batch = retry;
-                sleep(backoffNanos(attempt));
-                continue;
-            }
-            boolean retryable = status == 429 || status >= 500;
-            if (!retryable || lastAttempt) {
-                if (retryable) {
-                    circuitOpen = true;
-                }
-                throw new VexoException("vexo: batch rejected with HTTP " + status + ": " + response.body(), null,
-                        status, batch);
-            }
-            sleep(retryAfterNanos(response.headers().firstValue("Retry-After").orElse(null))
-                    .orElse(backoffNanos(attempt)));
+    // Waits before a retry. Returns false at once when the retry would come after the shutdown deadline, and false
+    // when the deadline passed during the wait, so no attempt ever starts after it.
+    private boolean waitToRetry(long nanos) throws InterruptedException {
+        if (nanos >= remainingNanos.getAsLong()) {
+            return false;
         }
+        TimeUnit.NANOSECONDS.sleep(nanos);
+        return remainingNanos.getAsLong() > 0;
     }
 
     private HttpResponse<String> post(List<Message> batch) throws IOException, InterruptedException {
@@ -142,16 +151,21 @@ final class BatchSender {
         return out.toByteArray();
     }
 
-    private void reportResults(List<Message> batch, List<Map<?, ?>> results, String what) {
-        if (results.isEmpty()) {
-            return;
-        }
+    private static VexoException resultsError(List<Message> batch, List<Map<?, ?>> results, String what) {
         List<VexoException.Dropped> dropped = new ArrayList<>();
         for (Map<?, ?> result : results) {
             dropped.add(new VexoException.Dropped(batch.get(index(result)).fields, String.valueOf(result.get("reason"))));
         }
-        onError.accept(new VexoException(String.format("vexo: %s %d message(s): %s", what, dropped.size(),
-                dropped.get(0).getReason()), dropped));
+        return new VexoException(String.format("vexo: %s %d message(s): %s", what, dropped.size(),
+                dropped.get(0).getReason()), dropped);
+    }
+
+    private static List<Message> messagesAt(List<Message> batch, List<Map<?, ?>> results) {
+        List<Message> messages = new ArrayList<>();
+        for (Map<?, ?> result : results) {
+            messages.add(batch.get(index(result)));
+        }
+        return messages;
     }
 
     // The response envelope's data object: {"success":true,"code":200,"data":{"accepted":1,"dropped":[],"failed":[]}}.
@@ -186,10 +200,6 @@ final class BatchSender {
 
     private static int index(Map<?, ?> result) {
         return ((Number) result.get("index")).intValue();
-    }
-
-    private void sleep(long nanos) throws InterruptedException {
-        TimeUnit.NANOSECONDS.sleep(Math.min(nanos, remainingNanos.getAsLong()));
     }
 
     // Exponential backoff with jitter: half of min(2^attempt seconds, 30 s), plus a random part of the other half.
