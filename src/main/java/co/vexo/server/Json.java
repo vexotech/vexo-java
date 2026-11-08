@@ -1,8 +1,14 @@
 package co.vexo.server;
 
 import java.lang.reflect.Array;
+import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Date;
@@ -18,13 +24,19 @@ import java.util.concurrent.atomic.AtomicLong;
 final class Json {
     // Deep enough for any real event; a circular reference hits it instead of overflowing the stack.
     static final int MAX_DEPTH = 100;
+    // The form every Vexo SDK sends a date-time in (SPEC.md M11).
+    private static final DateTimeFormatter DATE_TIME =
+            DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC);
 
     private Json() {
     }
 
     /**
      * Writes maps, collections, arrays, strings, numbers, booleans and null. Like the reference SDKs, any other value
-     * (BigDecimal, UUID, java.time types, enums) is written as its string; a java.util.Date as an ISO 8601 instant.
+     * is written as a string, in the form every Vexo SDK uses (SPEC.md M11): a date-time ({@link Instant},
+     * {@link OffsetDateTime}, {@link ZonedDateTime}, {@link LocalDateTime} read as UTC, {@link Date}) as
+     * "2026-11-07T12:00:00.000Z", a BigDecimal in plain notation, and anything else (UUID, LocalDate, enums) by its
+     * toString(). A lone UTF-16 surrogate becomes U+FFFD.
      *
      * @throws IllegalArgumentException for a value JSON can't hold: NaN, an infinity, or a circular reference
      */
@@ -64,12 +76,35 @@ final class Json {
                 items[i] = Array.get(value, i);
             }
             array(items, out, depth);
-        } else if (value instanceof Date) {
-            // getTime(), not toInstant(): java.sql.Date doesn't support toInstant().
-            string(Instant.ofEpochMilli(((Date) value).getTime()).toString(), out);
+        } else if (value instanceof BigDecimal) {
+            // toString() would write 1E-7.
+            string(((BigDecimal) value).toPlainString(), out);
         } else {
-            string(value.toString(), out);
+            Instant instant = instant(value);
+            string(instant == null ? value.toString() : DATE_TIME.format(instant), out);
         }
+    }
+
+    // The instant of a date-time value, or null for any other value. A LocalDateTime has no zone and is read as UTC
+    // (SPEC.md M5).
+    private static Instant instant(Object value) {
+        if (value instanceof Instant) {
+            return (Instant) value;
+        }
+        if (value instanceof Date) {
+            // getTime(), not toInstant(): java.sql.Date doesn't support toInstant().
+            return Instant.ofEpochMilli(((Date) value).getTime());
+        }
+        if (value instanceof OffsetDateTime) {
+            return ((OffsetDateTime) value).toInstant();
+        }
+        if (value instanceof ZonedDateTime) {
+            return ((ZonedDateTime) value).toInstant();
+        }
+        if (value instanceof LocalDateTime) {
+            return ((LocalDateTime) value).toInstant(ZoneOffset.UTC);
+        }
+        return null;
     }
 
     // The number types whose toString() is always a valid JSON number. BigDecimal is written as a string instead.
@@ -97,6 +132,12 @@ final class Json {
                 out.append('\\').append(c);
             } else if (c < 0x20) {
                 out.append(String.format("\\u%04x", (int) c));
+            } else if (Character.isHighSurrogate(c) && i + 1 < value.length()
+                    && Character.isLowSurrogate(value.charAt(i + 1))) {
+                out.append(c).append(value.charAt(++i));
+            } else if (Character.isSurrogate(c)) {
+                // A lone surrogate, which UTF-8 can't hold: the encoder would send '?', the other SDKs send U+FFFD.
+                out.append('\uFFFD');
             } else {
                 out.append(c);
             }

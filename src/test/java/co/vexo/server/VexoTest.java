@@ -175,9 +175,9 @@ class VexoTest {
         Map<String, Object> expected = new LinkedHashMap<>();
         expected.put("amount", "9.90");
         expected.put("orderId", "5b0c8f0e-6d1e-4f62-9d55-3f1f0f6a2b71");
-        expected.put("paidAt", "2026-01-02T03:04:05Z");
+        expected.put("paidAt", "2026-01-02T03:04:05.000Z");
         expected.put("day", "2026-01-02");
-        expected.put("created", "1970-01-01T00:00:00Z");
+        expected.put("created", "1970-01-01T00:00:00.000Z");
         expected.put("file", "/tmp/receipt.pdf");
         expected.put("tags", List.of("vip"));
         expected.put("scores", List.of(1.0, 2.0));

@@ -7,7 +7,9 @@ import java.math.BigInteger;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.LinkedHashMap;
@@ -41,11 +43,22 @@ class JsonTest {
     }
 
     @Test
+    void replacesLoneSurrogatesWithReplacementCharacters() {
+        assertEquals("\"ok\uFFFD \uFFFDx \uD83D\uDE00 \uFFFD\"", Json.write("ok\uD800 \uDC00x \uD83D\uDE00 \uD83D"));
+        assertEquals("{\"k\uFFFD\":1}", Json.write(Map.of("k\uDFFF", 1)));
+    }
+
+    @Test
     void writesBigDecimalUuidJavaTimeEnumsAndDatesAsStrings() {
         assertEquals("\"9.90\"", Json.write(new BigDecimal("9.90")));
+        assertEquals("\"0.00000012345678901234567\"", Json.write(new BigDecimal("1.2345678901234567E-7")));
+        assertEquals("\"1000\"", Json.write(new BigDecimal("1E+3")));
         assertEquals("\"5b0c8f0e-6d1e-4f62-9d55-3f1f0f6a2b71\"", Json.write(UUID.fromString("5b0c8f0e-6d1e-4f62-9d55-3f1f0f6a2b71")));
-        assertEquals("\"2026-11-07T12:00:00Z\"", Json.write(Instant.parse("2026-11-07T12:00:00Z")));
-        assertEquals("\"2026-11-07T12:00+02:00\"", Json.write(OffsetDateTime.parse("2026-11-07T12:00:00+02:00")));
+        assertEquals("\"2026-11-07T12:00:00.000Z\"", Json.write(Instant.parse("2026-11-07T12:00:00Z")));
+        assertEquals("\"2026-11-07T12:00:00.123Z\"", Json.write(Instant.parse("2026-11-07T12:00:00.123456789Z")));
+        assertEquals("\"2026-11-07T10:00:00.000Z\"", Json.write(OffsetDateTime.parse("2026-11-07T12:00:00+02:00")));
+        assertEquals("\"2026-11-07T11:00:00.000Z\"", Json.write(ZonedDateTime.parse("2026-11-07T12:00:00+01:00[Europe/Paris]")));
+        assertEquals("\"2026-11-07T12:00:00.000Z\"", Json.write(LocalDateTime.of(2026, 11, 7, 12, 0)));
         assertEquals("\"2026-11-07\"", Json.write(LocalDate.of(2026, 11, 7)));
         assertEquals("\"PT1H\"", Json.write(Duration.ofHours(1)));
         assertEquals("\"SECONDS\"", Json.write(TimeUnit.SECONDS));
