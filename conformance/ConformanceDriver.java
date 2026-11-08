@@ -1,5 +1,6 @@
 package co.vexo.server;
 
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
@@ -86,6 +87,18 @@ public final class ConformanceDriver {
         if (Boolean.TRUE.equals(step.get("nan"))) {
             properties = properties == null ? new LinkedHashMap<>() : properties;
             properties.put("nan", Double.NaN);
+        }
+        if (step.get("dateTime") != null) {
+            properties = properties == null ? new LinkedHashMap<>() : properties;
+            properties.put("dateTime", OffsetDateTime.parse((String) step.get("dateTime")));
+        }
+        if (step.get("decimal") != null) {
+            properties = properties == null ? new LinkedHashMap<>() : properties;
+            properties.put("decimal", new BigDecimal((String) step.get("decimal")));
+        }
+        if (Boolean.TRUE.equals(step.get("invalidUnicode"))) {
+            properties = properties == null ? new LinkedHashMap<>() : properties;
+            properties.put("invalidUnicode", "ok\uD800"); // a lone surrogate
         }
         return properties;
     }
