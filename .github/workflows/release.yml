@@ -1,0 +1,35 @@
+name: release
+
+# Publishes to Maven Central when a GitHub release is published. Maven Central has no trusted publishing, so this
+# needs four repository secrets: MAVEN_CENTRAL_USERNAME and MAVEN_CENTRAL_PASSWORD (a Central Portal user token),
+# GPG_PRIVATE_KEY (an ASCII-armored signing key whose public key is on keyserver.ubuntu.com) and GPG_PASSPHRASE.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  central:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 25
+          cache: maven
+          server-id: central
+          server-username: MAVEN_CENTRAL_USERNAME
+          server-password: MAVEN_CENTRAL_PASSWORD
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
+      - name: Check that the tag matches the project version
+        run: test "${GITHUB_REF_NAME#v}" = "$(mvn -q help:evaluate -Dexpression=project.version -DforceStdout)"
+      - run: mvn -B -P release deploy
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
